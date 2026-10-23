@@ -6,9 +6,6 @@ import os
 import pandas as pd
 import html  # Стандартный модуль для безопасного экранирования спецсимволов
 from datetime import datetime
-import urllib.request
-from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-from openpyxl.utils import get_column_letter
 
 # Импорт компонентов ReportLab для верстки отчетов
 from reportlab.lib.pagesizes import letter
@@ -17,6 +14,7 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
+from openpyxl.styles import Font, PatternFill, Border, Side
 
 st.set_page_config(page_title="NovaHeat Simulator", layout="wide")
 
@@ -137,7 +135,7 @@ else: def_h3, def_k3 = 150.0, 1.650
 h_gravel = st.sidebar.number_input("Толщина нижнего слоя массива конструкции, мм", min_value=10.0, max_value=1000.0, value=def_h3, key='h3_input')
 k_gravel = st.sidebar.number_input("Теплопроводность нижнего слоя массива конструкции, Вт/(м·°C)", value=def_k3, format="%.3f", key='k3_input')
 
-# Возвращена базовая физика полного шага W
+# Геометрия расчетной области на полный шаг укладки W
 W = spacing / 1000.0  
 H = (h_carpet + h_sand + h_gravel) / 1000.0  
 
@@ -155,10 +153,9 @@ for j in range(ny):
     elif y <= y_sand_end: K[j, :] = k_sand
     else: K[j, :] = k_gravel
 
-# Возвращено положение кабеля строго по центру расчетной ячейки
+# Кабель расположен строго по центру расчетной ячейки
 cable_x_idx = int((W / 2.0) / dx)
-cable_y_idx = int((depth / 1000.0) / dy)
-cable_y_idx = min(max(1, cable_y_idx), ny - 2)
+cable_y_idx = min(max(1, int((depth / 1000.0) / dy)), ny - 2)
 q_v = (P_line * power_multiplier) / (dx * dy)
 if st.button("Выполнить термодинамический расчет"):
     with st.spinner("Моделирование установившегося теплового режима"):
@@ -173,10 +170,8 @@ if st.button("Выполнить термодинамический расчет
         for it in range(15000):
             T_old = T_calc.copy()
             
-            # Стабильный векторизованный пересчет всей матрицы конструкции
-            T_calc[1:-1, 1:-1] = (K_n * T_calc[:-2, 1:-1] + K_s * T_calc[2:, 1:-1] + 
-                                  K_e * T_calc[1:-1, 2:] + K_w * T_calc[1:-1, :-2]) / denom
-            
+            # Стабильный векторизованный пересчет всей тепловой матрицы конструкции
+            T_calc[1:-1, 1:-1] = (K_n * T_calc[:-2, 1:-1] + K_s * T_calc[2:, 1:-1] + K_e * T_calc[1:-1, 2:] + K_w * T_calc[1:-1, :-2]) / denom
             T_calc[cable_y_idx, cable_x_idx] += (q_v * dx * dy) / denom[cable_y_idx - 1, cable_x_idx - 1]
             
             T_calc[:, 0] = T_calc[:, 1]
@@ -200,7 +195,6 @@ if st.button("Выполнить термодинамический расчет
         
         st.session_state['flux_top'] = f_top_calibrated
         st.session_state['flux_bottom'] = f_bottom_calibrated
-        # Прецизионная сумма теплового баланса: система равна сумме уходящих потоков вверх и вниз
         st.session_state['flux_sys'] = f_top_calibrated + f_bottom_calibrated
 
         x_indices = np.linspace(0, cable_x_idx, 11, dtype=int)
@@ -211,12 +205,9 @@ if st.button("Выполнить термодинамический расчет
         
         matrix_rows = []
         for d_mm in target_depths_mm:
-            j_idx = int((d_mm / 1000.0) / dy)
-            j_idx = min(j_idx, ny - 1)
+            j_idx = min(int((d_mm / 1000.0) / dy), ny - 1)
             y_curr = j_idx * dy
-            if y_curr <= y_carpet_end: mat_name = material_choice_1
-            elif y_curr <= y_sand_end: mat_name = material_choice_2
-            else: mat_name = material_choice_3
+            mat_name = material_choice_1 if y_curr <= y_carpet_end else (material_choice_2 if y_curr <= y_sand_end else material_choice_3)
             
             if d_mm == depth: idx_str = "0"
             elif d_mm < depth:
@@ -263,7 +254,9 @@ def generate_pdf_report(meta, img_buf1, img_buf2):
     def add_later_headers(canvas, doc_obj):
         canvas.saveState()
         sm_logo = os.path.join("assets", "logo.png")
-        if os.path.exists(sm_logo): canvas.drawImage(sm_logo, 36, 750, width=18, height=18)
+        if os.path.exists(sm_logo): 
+            try: canvas.drawImage(sm_logo, 36, 750, width=18, height=18)
+            except: pass
         canvas.setFont(fn, 8)
         canvas.setFillColor(colors.HexColor('#475569'))
         canvas.drawString(60, 756, f"Моделирование двумерного температурного поля — {p_name_esc}")
@@ -275,9 +268,13 @@ def generate_pdf_report(meta, img_buf1, img_buf2):
     lg_path = os.path.join("assets", "logotype.png")
     date_txt = datetime.now().strftime('%d.%m.%Y %H:%M:%S')
     
-    if os.path.exists(lg_path): hdr_cells = [[Image(lg_path, width=130, height=20), Paragraph(date_txt, ParagraphStyle('R', fontName=fn, fontSize=8.5, alignment=2))]]
-    else: hdr_cells = [[Paragraph("<b>NovaHeat</b>", s_bold), Paragraph(date_txt, ParagraphStyle('R', fontName=fn, fontSize=8.5, alignment=2))]]
+    if os.path.exists(lg_path): 
+        try: hdr_cells = [[Image(lg_path, width=130, height=20), Paragraph(date_txt, ParagraphStyle('R', fontName=fn, fontSize=8.5, alignment=2))]]
+        except: hdr_cells = [[Paragraph("<b>NovaHeat</b>", s_bold), Paragraph(date_txt, ParagraphStyle('R', fontName=fn, fontSize=8.5, alignment=2))]]
+    else: 
+        hdr_cells = [[Paragraph("<b>NovaHeat</b>", s_bold), Paragraph(date_txt, ParagraphStyle('R', fontName=fn, fontSize=8.5, alignment=2))]]
     
+    # Геометрия ячеек зафиксирована жестко числовым массивом
     hdr_table = Table(hdr_cells, colWidths=[270, 270])
     hdr_table.setStyle(TableStyle([('VALIGN', (0,0), (-1,-1), 'MIDDLE'), ('BOTTOMPADDING', (0,0), (-1,-1), 8)]))
     story.append(hdr_table)
@@ -285,17 +282,13 @@ def generate_pdf_report(meta, img_buf1, img_buf2):
     story.append(Paragraph("NovaHeat. Отчет о результатах моделирования двумерного температурного поля", s_title))
     story.append(Spacer(1, 10))
     
-    w_txt = "<b>ВАЖНО!</b><br/>Пользователь программного комплекса NovaHeat несет полную ответственность за верификацию проектных решений по системе напольного электрообогрева. Программа NovaHeat производит исключительно расчет распределения теплоты; проверка корректности исходных данных, теплофизической модели или финальных выходных параметров не осуществляется."
+    w_txt = "<b>ВАЖНО!</b><br/>Пользователь программного комплекса NovaHeat несет полную ответственность за верификацию проектных решений по системе напольного электрообогрева."
     w_tbl = Table([[Paragraph(w_txt, s_warn)]], colWidths=[540])
     w_tbl.setStyle(TableStyle([('PADDING', (0,0), (-1,-1), 5), ('BACKGROUND', (0,0), (0,0), colors.HexColor('#FEF2F2')), ('BOX', (0,0), (0,0), 0.5, colors.HexColor('#FCA5A5'))]))
     story.append(w_tbl)
     story.append(Spacer(1, 10))
     
-    meta_data = [
-        [Paragraph("• Название проекта:", s_norm), Paragraph(f"<b>{p_name_esc}</b>", s_norm)],
-        [Paragraph("• Заказчик:", s_norm), Paragraph(f"<b>{c_name_esc}</b>", s_norm)],
-        [Paragraph("• Расчет выполнен:", s_norm), Paragraph(f"<b>{done_by_esc}</b>", s_norm)]
-    ]
+    meta_data = [[Paragraph("• Название проекта:", s_norm), Paragraph(f"<b>{p_name_esc}</b>", s_norm)], [Paragraph("• Заказчик:", s_norm), Paragraph(f"<b>{c_name_esc}</b>", s_norm)], [Paragraph("• Расчет выполнен:", s_norm), Paragraph(f"<b>{done_by_esc}</b>", s_norm)]]
     mt = Table(meta_data, colWidths=[130, 410])
     mt.setStyle(TableStyle([('PADDING', (0,0), (-1,-1), 1.5)]))
     story.append(mt)
@@ -304,70 +297,56 @@ def generate_pdf_report(meta, img_buf1, img_buf2):
     story.append(HRFlowable(width="100%", thickness=0.8, color=colors.gray, spaceAfter=8))
     story.append(Paragraph(f"<i><b>{p_name_esc}</b></i>", ParagraphStyle('C', fontName=fb, fontSize=10, alignment=1)))
     story.append(HRFlowable(width="100%", thickness=0.8, color=colors.gray, spaceBefore=6, spaceAfter=15))
-    
     story.append(Paragraph("<b>ИСХОДНЫЕ ДАННЫЕ ДЛЯ МОДЕЛИРОВАНИЯ</b>", s_bold))
     story.append(Spacer(1, 8))
     
-    design_cells = [
-        [Paragraph("<b>Параметры нагревательного кабеля</b>", s_bold), Paragraph("<b>Параметры и условия окружающей среды</b>", s_bold)],
-        [Paragraph(f"• Греющий кабель: {c_name_m_esc}<br/>• Номинальное напряжение: {meta['voltage']} В<br/>• Способ монтажа: Укладка в массив плиты (монолитный обогрев)<br/>• Шаг укладки кабеля: {meta['spacing']} мм<br/>• Глубина монтажа: {meta['depth']} мм<br/>• Коэффициент запаса мощности: {meta['p_mult']}<br/>• Тип расчета: Расчет установившегося термодинамического режима при фиксированном шаге укладки", s_norm),
-         Paragraph(f"• Расчетные условия: {meta['cond_txt']}<br/>• Температура окружающей среды (воздух): {meta['T_amb']} °C<br/>• Скорость ветра: {meta['wind']:.1f} км/ч<br/>• Интенсивность снегопада: {meta['snow']} мм/ч<br/>• Коэффициент свободной площади: {meta['far']:.2f}<br/>• Коэффициент теплоотдачи наружной поверхности: {meta['alpha']:.3f} Вт/(м²·°C)", s_norm)],
-        [Paragraph("", s_norm), Paragraph("<b>Расчетные параметры нижней поверхности массива конструкции</b>", s_bold)],
-        [Paragraph("", s_norm), Paragraph(f"• Граничные условия: Грунтовое основание<br/>• Температура грунта: {meta['T_ground']} °C", s_norm)]
-    ]
+    design_cells = [[Paragraph("<b>Параметры нагревательного кабеля</b>", s_bold), Paragraph("<b>Параметры и условия окружающей среды</b>", s_bold)], [Paragraph(f"• Греющий кабель: {c_name_m_esc}<br/>• Номинальное напряжение: {meta['voltage']} В<br/>• Шаг укладки кабеля: {meta['spacing']} мм<br/>• Глубина монтажа: {meta['depth']} мм", s_norm), Paragraph(f"• Расчетные условия: {meta['cond_txt']}<br/>• Температура воздуха: {meta['T_amb']} °C<br/>• Коэффициент теплоотдачи: {meta['alpha']:.3f} Вт/(м²·°C)", s_norm)], [Paragraph("", s_norm), Paragraph("<b>Параметры нижней поверхности массива конструкции</b>", s_bold)], [Paragraph("", s_norm), Paragraph(f"• Граничные условия: Грунтовое основание<br/>• Температура грунта: {meta['T_ground']} °C", s_norm)]]
     dt = Table(design_cells, colWidths=[270, 270])
     dt.setStyle(TableStyle([('VALIGN', (0,0), (-1,-1), 'TOP'), ('PADDING', (0,0), (-1,-1), 4)]))
     story.append(dt)
     
     story.append(Spacer(1, 25))
-    story.append(Paragraph("<b>Теплофизические свойства материалов слоев конструкции</b> (Параметры разбивки слоев: Автоматическая)", s_norm))
+    story.append(Paragraph("<b>Теплофизические свойства материалов слоев конструкции</b>", s_norm))
     story.append(Spacer(1, 8))
     
-    m_cells = [
-        [Paragraph("Материал слоя массивов", s_bold), Paragraph("Толщина (мм)", s_bold), Paragraph("Теплопроводность (Вт/(м·°C))", s_bold), Paragraph("Плотность (кг/м³)", s_bold), Paragraph("Теплоемкость (кДж/(кг·°C))", s_bold)],
-        [Paragraph(f"{m1_esc}", s_norm), Paragraph(f"{meta['h_c']:.2f}", s_norm), Paragraph(f"{meta['k_c']:.3f}", s_norm), Paragraph("1800.00", s_norm), Paragraph("0.840", s_norm)],
-        [Paragraph(f"{m2_esc}", s_norm), Paragraph(f"{meta['h_s']:.2f}", s_norm), Paragraph(f"{meta['k_s']:.3f}", s_norm), Paragraph("1777.998", s_norm), Paragraph("0.837", s_norm)],
-        [Paragraph(f"{m3_esc}", s_norm), Paragraph(f"{meta['h_g']:.2f}", s_norm), Paragraph(f"{meta['k_g']:.3f}", s_norm), Paragraph("1457.638", s_norm), Paragraph("0.837", s_norm)]
-    ]
-    mtbl = Table(m_cells, colWidths=[160, 80, 100, 100, 100])
+    m_cells = [[Paragraph("Материал слоя массивов", s_bold), Paragraph("Толщина (мм)", s_bold), Paragraph("Теплопроводность (Вт/(м·°C))", s_bold)], [Paragraph(f"{m1_esc}", s_norm), Paragraph(f"{meta['h_c']:.2f}", s_norm), Paragraph(f"{meta['k_c']:.3f}", s_norm)], [Paragraph(f"{m2_esc}", s_norm), Paragraph(f"{meta['h_s']:.2f}", s_norm), Paragraph(f"{meta['k_s']:.3f}", s_norm)], [Paragraph(f"{m3_esc}", s_norm), Paragraph(f"{meta['h_g']:.2f}", s_norm), Paragraph(f"{meta['k_g']:.3f}", s_norm)]]
+    mtbl = Table(m_cells, colWidths=[240, 150, 150])
     mtbl.setStyle(TableStyle([('LINEBELOW', (0,0), (-1,0), 0.5, colors.black), ('PADDING', (0,0), (-1,-1), 4), ('VALIGN', (0,0), (-1,-1), 'MIDDLE')]))
     story.append(mtbl)
     
     story.append(PageBreak())
-    
     story.append(Spacer(1, 10))
     story.append(Paragraph("<b>РЕЗУЛЬТАТЫ ТЕРМОДИНАМИЧЕСКОГО РАСЧЕТА</b>", s_bold))
     story.append(Spacer(1, 8))
     
-    res_txt = f"• Линейная мощность греющего кабеля: {meta['P_line']*meta['p_mult']:.1f} Вт/м при температуре оболочки {meta['cable_temp']:.1f} °C (Коэффициент запаса мощности = {meta['p_mult']})<br/>" \
-              f"• Плотность теплового потока, вырабатываемого системой (Удельная тепловая мощность): {meta['flux_sys']:.1f} Вт/м²<br/>" \
+    res_txt = f"• Линейная мощность греющего кабеля: {meta['P_line']*meta['p_mult']:.1f} Вт/м при температуре оболочки {meta['cable_temp']:.1f} °C<br/>" \
+              f"• Плотность теплового потока, вырабатываемого системой (Удельная мощность): {meta['flux_sys']:.1f} Вт/м²<br/>" \
               f"• Плотность теплового потока через верхнюю поверхность: {meta['flux_top']:.1f} Вт/м²<br/>" \
               f"• Плотность теплового потока через нижнюю поверхность: {meta['flux_bottom']:.1f} Вт/м²<br/>" \
               f"• Минимальная температура наружной поверхности: {meta['min_temp']:.2f} °C<br/>" \
               f"• Максимальная температура наружной поверхности: {meta['max_temp']:.2f} °C"
     story.append(Paragraph(res_txt, s_norm))
-    
     story.append(Spacer(1, 20))
     story.append(Image(img_buf1, width=540, height=260))
-    
     story.append(Spacer(1, 25))
     story.append(Image(img_buf2, width=540, height=260))
     
-    doc.build(story, onLaterPages=add_later_headers)
+    doc.build(story)
     buffer.seek(0)
     return buffer
 def generate_excel_report(meta):
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        # Устранение предупреждения: Все строки выравнены строго до 2 элементов
         summary_rows = [
             ["Отчет о результатах термодинамического моделирования NovaHeat", ""],
             ["Дата генерации:", datetime.now().strftime('%d.%m.%Y %H:%M:%S')],
             ["Наименование проекта:", meta['p_name']],
             ["Заказчик:", meta['c_name']],
             ["Расчет выполнен:", meta['done_by']],
-            [],
-            ["ВАЖНО!", "Пользователь несет полную ответственность за verifikatsiyu проектных решений по системе обогрева."],
-            [],
+            ["", ""],
+            ["ВАЖНО!", "Пользователь несет полную ответственность за verifikatsiyu проектных решений."],
+            ["", ""],
             ["ПРОЕКТНЫЕ ДАННЫЕ И ГРАНИЧНЫЕ УСЛОВИЯ В МАССИВЕ КОНСТРУКЦИИ", ""],
             ["Греющий кабель", meta['c_name_m']],
             ["Шаг укладки кабеля, мм", meta['spacing']],
@@ -380,92 +359,74 @@ def generate_excel_report(meta):
             ["Интенсивность снегопада, мм/ч", meta['snow']],
             ["Коэффициент теплоотдачи верхний, Вт/(м²·°C)", meta['alpha']],
             ["Температура грунта снизу, °C", meta['T_ground']],
-            [],
+            ["", ""],
             ["РЕЗУЛЬТАТЫ ТЕРМОДИНАМИЧЕСКОГО РАСЧЕТА", ""],
-            ["Плотность теплового потока, вырабатываемого системой (Удельная мощность), Вт/м²", meta['flux_sys']],
+            ["Плотность теплового потока, вырабатываемого системой, Вт/м²", meta['flux_sys']],
             ["Минимальная температура наружной поверхности, °C", meta['min_temp']],
             ["Максимальная температура наружной поверхности, °C", meta['max_temp']],
             ["Температура оболочки кабеля, °C", meta['cable_temp']],
             ["Плотность верхнего теплового потока, Вт/м²", meta['flux_top']],
             ["Плотность нижнего теплового потока, Вт/м²", meta['flux_bottom']]
         ]
-        df_sum = pd.DataFrame(summary_rows)
-        df_sum.to_excel(writer, sheet_name="Общие результаты", index=False, header=False)
-        
+        pd.DataFrame(summary_rows).to_excel(writer, sheet_name="Общие результаты", index=False, header=False)
         headers = ["Глубина (мм)", "Относ. уровень", "Слой массива (материал)"] + [f"{x:.1f} мм" for x in st.session_state['x_coords_mm']]
         pd.DataFrame(st.session_state['matrix_rows'], columns=headers).to_excel(writer, sheet_name="Температурный профиль", index=False)
         
         workbook = writer.book
-        ws1 = workbook["Общие результаты"]
-        ws2 = workbook["Температурный профиль"]
-        
+        ws1, ws2 = workbook["Общие результаты"], workbook["Температурный профиль"]
         color_primary = "C23530" 
         fill_header = PatternFill(start_color=color_primary, end_color=color_primary, fill_type="solid")
         fill_warn = PatternFill(start_color="FEF2F2", end_color="FEF2F2", fill_type="solid")
-        
-        font_header = Font(name="Arial", size=11, bold=True, color="FFFFFF")
-        font_warn = Font(name="Arial", size=9, bold=True, color="B91C1C")
         border_thin = Border(left=Side(style='thin', color='CBD5E1'), right=Side(style='thin', color='CBD5E1'), top=Side(style='thin', color='CBD5E1'), bottom=Side(style='thin', color='CBD5E1'))
         
         ws1.merge_cells("A1:B1")
         ws1["A1"].font = Font(name="Arial", size=14, bold=True, color=color_primary)
-        
         ws1.merge_cells("A7:B7")
         ws1["A7"].fill = fill_warn
-        ws1["A7"].font = font_warn
+        ws1["A7"].font = Font(name="Arial", size=9, bold=True, color="B91C1C")
         
         header_rows = [9, 22]
         for r in header_rows:
             ws1.merge_cells(start_row=r, start_column=1, end_row=r, end_column=2)
             ws1.cell(row=r, column=1).fill = fill_header
-            ws1.cell(row=r, column=1).font = font_header
+            ws1.cell(row=r, column=1).font = Font(name="Arial", size=11, bold=True, color="FFFFFF")
             
-        for row in ws1.iter_rows(min_row=1, max_row=ws1.max_row, min_col=1, max_col=2):
-            for cell in row:
-                cell.border = border_thin
-                if cell.font.name != "Arial" and cell.row != 1 and cell.row != 7 and cell.row not in header_rows:
-                    cell.font = Font(name="Arial", size=10)
+        for row in ws1.iter_rows(max_row=ws1.max_row, max_col=2):
+            for cell in row: cell.border = border_thin
                 
         for col_num in range(1, ws2.max_column + 1):
             cell = ws2.cell(row=1, column=col_num)
-            cell.fill = PatternFill(start_color=color_primary, end_color=color_primary, fill_type="solid")
+            cell.fill = fill_header
             cell.font = Font(name="Arial", size=10, bold=True, color="FFFFFF")
             
         for row in ws2.iter_rows(min_row=2, max_row=ws2.max_row, min_col=1, max_col=ws2.max_column):
-            for cell in row:
-                cell.border = border_thin
-                cell.font = Font(name="Arial", size=10)
+            for cell in row: cell.border = border_thin
                 
-        ws1.column_dimensions['A'].width = 52
-        ws1.column_dimensions['B'].width = 32
-        ws2.column_dimensions['A'].width = 15
-        ws2.column_dimensions['B'].width = 15
-        ws2.column_dimensions['C'].width = 25
-        
+        ws1.column_dimensions['A'].width, ws1.column_dimensions['B'].width = 52, 32
+        ws2.column_dimensions['A'].width, ws2.column_dimensions['B'].width, ws2.column_dimensions['C'].width = 15, 15, 25
     output.seek(0)
     return output
 if st.session_state.get('calculated', False):
     st.success("Расчет успешно завершен!")
-    
     col1, col2, col3 = st.columns(3)
     col1.metric("Мин. темп. поверхности", f"{st.session_state['min_temp']:.2f} °C")
     col2.metric("Макс. темп. поверхности", f"{st.session_state['max_temp']:.2f} °C")
     col3.metric("Температура кабеля", f"{st.session_state['cable_temp']:.2f} °C")
     
-    plt.rcParams['font.sans-serif'] = ['Segoe UI', 'Arial', 'Tahoma', 'sans-serif']
+    # 100% защита от черных квадратов на Linux-серверах Стримлита: используем встроенный DejaVu Sans
+    plt.rcParams['font.sans-serif'] = ['DejaVu Sans']
     plt.rcParams['font.family'] = 'sans-serif'
     
     # --- Модель 1: Восстановленная расчетная модель ---
     fig1, ax1 = plt.subplots(figsize=(10, 4.8))
     im1 = ax1.imshow(st.session_state['T_array'], extent=[0, W*1000, H*1000, 0], cmap='jet', aspect='auto', interpolation='bicubic')
-    cbar1 = fig1.colorbar(im1, ax=ax1)
-    cbar1.set_label("Температура (°C)", fontsize=9)
-    # Черная метка кабеля уменьшена ровно в 2 раза до размера 5
+    fig1.colorbar(im1, ax=ax1).set_label("Температура (°C)", fontsize=9)
     ax1.plot(W*1000/2, depth, 'ko', markersize=5)
     ax1.axhline(h_carpet, color='white', linestyle='--')
     ax1.axhline(h_carpet + h_sand, color='white', linestyle='--')
     
-    ax1.set_title(f"Тепловая модель массива конструкции (1 шаг укладки, {spacing}, мм)", fontsize=11, fontweight='bold', pad=10)
+    title1 = f"Тепловая модель массива конструкции\n(1 шаг укладки, {spacing} мм)"
+    ax1.set_title(title1, fontsize=11, fontweight='bold', pad=10)
     ax1.set_xlabel("Положение расчетных узлов по оси X (мм)", fontsize=9)
     ax1.set_ylabel("Глубина массива конструкции, мм", fontsize=9)
     st.pyplot(fig1)
@@ -474,67 +435,40 @@ if st.session_state.get('calculated', False):
     fig2, ax2 = plt.subplots(figsize=(10, 4.8))
     T_single = st.session_state['T_array']
     T_multi_passes = np.hstack([T_single] * 5)
-    W_multi = W * 5 * 1000
-    
-    im2 = ax2.imshow(T_multi_passes, extent=[0, W_multi, H*1000, 0], cmap='jet', aspect='auto', interpolation='bicubic')
-    cbar2 = fig2.colorbar(im2, ax=ax2)
-    cbar2.set_label("Температура (°C)", fontsize=9)
-    
-    # Черные метки кабелей уменьшены ровно в 2 раза до размера 4
-    for i in range(5):
-        cable_x_pos = (W * 1000 / 2) + i * (W * 1000)
-        ax2.plot(cable_x_pos, depth, 'ko', markersize=4)
-        
+    im2 = ax2.imshow(T_multi_passes, extent=[0, W * 5 * 1000, H*1000, 0], cmap='jet', aspect='auto', interpolation='bicubic')
+    fig2.colorbar(im2, ax=ax2).set_label("Температура (°C)", fontsize=9)
+    for i in range(5): 
+        ax2.plot((W * 1000 / 2) + i * (W * 1000), depth, 'ko', markersize=4)
     ax2.axhline(h_carpet, color='white', linestyle='--')
     ax2.axhline(h_carpet + h_sand, color='white', linestyle='--')
     
-    ax2.set_title(f"Тепловая модель массива конструкции (5 шагов укладки, {spacing*5}, мм)", fontsize=11, fontweight='bold', pad=10)
+    title2 = f"Тепловая модель массива конструкции\n(5 шагов укладки, {spacing*5} мм)"
+    ax2.set_title(title2, fontsize=11, fontweight='bold', pad=10)
     ax2.set_xlabel("Положение расчетных узлов по оси X (мм)", fontsize=9)
     ax2.set_ylabel("Глубина массива конструкции, мм", fontsize=9)
     st.pyplot(fig2)
     
     st.subheader("Двухмерное температурное поле")
     right_col_name = f"{st.session_state['x_coords_mm'][-1]:.1f} мм"
-    st.markdown(f"**Таблица распределения температур по толщине конструктивных слоев массива в зависимости от шага укладки кабеля (в сечениях от оси кабеля (0 мм) до ½ шага укладки ({right_col_name}))**")
-    
+    st.markdown(f"**Таблица распределения температур по толщине конструктивных слоев массива (от оси кабеля (0 мм) до ½ шага укладки ({right_col_name}))**")
     headers_st = ["Глубина (мм)", "Относ. уровень", "Слой массива (материал)"] + [f"{x:.1f} мм" for x in st.session_state['x_coords_mm']]
     st.dataframe(pd.DataFrame(st.session_state['matrix_rows'], columns=headers_st), use_container_width=True)
     
-    img_buf1 = io.BytesIO()
+    img_buf1, img_buf2 = io.BytesIO(), io.BytesIO()
     fig1.savefig(img_buf1, format='png', bbox_inches='tight', dpi=200)
-    img_buf1.seek(0)
-    plt.close(fig1)
-    
-    img_buf2 = io.BytesIO()
     fig2.savefig(img_buf2, format='png', bbox_inches='tight', dpi=200)
-    img_buf2.seek(0)
-    plt.close(fig2)
+    img_buf1.seek(0); img_buf2.seek(0)
+    plt.close(fig1); plt.close(fig2)
     
-    r_data = {
-        'p_name': project_name, 'c_name': customer_name, 'done_by': done_by,
-        'c_name_m': cable_name, 'spacing': spacing, 'depth': depth, 'voltage': voltage,
-        'p_mult': power_multiplier, 'T_amb': T_amb, 'wind': wind_speed_kmh, 'snow': snow_rate,
-        'far': free_area_ratio, 'alpha': alpha_top, 'T_ground': T_ground, 'cond_txt': condition_text,
-        'h_c': h_carpet, 'k_c': k_carpet, 'h_s': h_sand, 'k_s': k_sand, 'h_g': h_gravel, 'k_g': k_gravel,
-        'min_temp': st.session_state['min_temp'], 'max_temp': st.session_state['max_temp'],
-        'cable_temp': st.session_state['cable_temp'], 'P_line': P_line,
-        'flux_top': st.session_state['flux_top'], 'flux_bottom': st.session_state['flux_bottom'],
-        'flux_sys': st.session_state['flux_sys'],
-        'm1': material_choice_1, 'm2': material_choice_2, 'm3': material_choice_3
-    }
-    
+    r_data = {'p_name': project_name, 'c_name': customer_name, 'done_by': done_by, 'c_name_m': cable_name, 'spacing': spacing, 'depth': depth, 'voltage': voltage, 'p_mult': power_multiplier, 'T_amb': T_amb, 'wind': wind_speed_kmh, 'snow': snow_rate, 'far': free_area_ratio, 'alpha': alpha_top, 'T_ground': T_ground, 'cond_txt': condition_text, 'h_c': h_carpet, 'k_c': k_carpet, 'h_s': h_sand, 'k_s': k_sand, 'h_g': h_gravel, 'k_g': k_gravel, 'min_temp': st.session_state['min_temp'], 'max_temp': st.session_state['max_temp'], 'cable_temp': st.session_state['cable_temp'], 'P_line': P_line, 'flux_top': st.session_state['flux_top'], 'flux_bottom': st.session_state['flux_bottom'], 'flux_sys': st.session_state['flux_sys'], 'm1': material_choice_1, 'm2': material_choice_2, 'm3': material_choice_3}
     pdf_file = generate_pdf_report(r_data, img_buf1, img_buf2)
     excel_file = generate_excel_report(r_data)
     
     st.divider()
     st.subheader("Выгрузка отчета")
     exp_col1, exp_col2 = st.columns(2)
-    
     fn_suffix = f"{datetime.now().strftime('%d.%m.%Y_%H.%M')}_{project_name.replace(' ', '_')}"
-    
-    with exp_col1:
-        st.download_button(label="Скачать отчет в формате PDF", data=pdf_file, file_name=f"NovaHeat_Report_{fn_suffix}.pdf", mime="application/pdf")
-    with exp_col2:
-        st.download_button(label="Скачать отчет в формате Excel", data=excel_file, file_name=f"NovaHeat_Report_{fn_suffix}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    exp_col1.download_button(label="Скачать отчет в формате PDF", data=pdf_file, file_name=f"NovaHeat_Report_{fn_suffix}.pdf", mime="application/pdf")
+    exp_col2.download_button(label="Скачать отчет в формате Excel", data=excel_file, file_name=f"NovaHeat_Report_{fn_suffix}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 else:
     st.info("Введите исходные данные на боковой панели и нажмите кнопку 'Выполнить термодинамический расчет'.")
